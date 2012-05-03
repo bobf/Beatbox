@@ -6,6 +6,9 @@ __credits__ = "Mad shouts to the sforce possie"
 __copyright__ = "(C) 2006-2012 Simon Fell. GNU GPL 2."
 
 import httplib
+import socket
+import urllib
+import ssl
 from urlparse import urlparse
 from StringIO import StringIO
 import gzip
@@ -33,10 +36,41 @@ gzipResponse=True	# are we going to tell the server to gzip the response ?
 forceHttp=False		# force all connections to be HTTP, for debugging
 
 
+def patched_HTTPSConnection_connect(self):
+    """
+    openssl on some Ubuntu versions is broken, see bug report here:
+    https://bugs.launchpad.net/ubuntu/+source/openssl/+bug/965371
+
+    At the time of writing this bug is still in effect so this function
+    monkeypatches httplib.HTTPSConnection.connect to force TLSv1
+
+    `self` used to allow code to look as similar as possible to original -
+    should be an instance of HTTPSConnection
+    """
+    sock = socket.create_connection((self.host, self.port),
+                                    self.timeout, self.source_address)
+    if self._tunnel_host:
+        self.sock = sock
+        self._tunnel()
+    self.sock = ssl.wrap_socket(sock, self.key_file, self.cert_file,
+            ssl_version=ssl.PROTOCOL_TLSv1)
+
 def makeConnection(scheme, host):
-	if forceHttp or scheme.upper() == 'HTTP':
-		return httplib.HTTPConnection(host)
-	return httplib.HTTPSConnection(host)
+    if forceHttp or scheme.upper() == 'HTTP':
+        return httplib.HTTPConnection(host)
+
+
+    https_proxy_string = urllib.getproxies().get("https", None)
+
+    if https_proxy_string is None:
+        connection = httplib.HTTPSConnection(host)
+    else:
+        parsed = urlparse(https_proxy_string)
+        proxy_host, _, proxy_port = parsed.netloc.partition(":")
+        connection = httplib.HTTPSConnection(proxy_host, port=int(proxy_port))
+        connection.set_tunnel(host, 443)
+        patched_HTTPSConnection_connect(connection)
+    return connection
 
 
 # the main sforce client proxy class
